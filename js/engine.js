@@ -335,6 +335,10 @@
    */
   async function render(src, dstCanvas, w, h, an, p, opts) {
     opts = opts || {};
+    if (opts.pool && opts.pool.size > 0) {
+      try { return await renderParallel(src, dstCanvas, w, h, an, p, opts); }
+      catch (e) { console.warn('parallel render failed, using single thread', e); opts.pool.broken = true; }
+    }
     var cs = opts.colorSpace || 'srgb';
     var sw = src.naturalWidth || src.width, shh = src.naturalHeight || src.height;
     dstCanvas.width = w; dstCanvas.height = h;
@@ -364,6 +368,114 @@
     return true;
   }
 
+  /* ------------------------------------------------------------ 여러 일꾼으로 나눠 처리 */
+  /**
+   * 일꾼(Web Worker) 묶음. 아이폰 14 Pro는 동시에 6가지 일을 할 수 있어서 3~4개를 써요.
+   */
+  function WorkerPool(url, size) {
+    this.workers = []; this.idle = []; this.waiting = []; this.handlers = {}; this.seq = 0; this.size = 0; this.broken = false;
+    for (var i = 0; i < size; i++) {
+      var wk;
+      try { wk = new Worker(url); } catch (e) { break; }
+      wk.onmessage = this._onMessage.bind(this, wk);
+      wk.onerror = this._onError.bind(this, wk);
+      this.workers.push(wk); this.idle.push(wk);
+    }
+    this.size = this.workers.length;
+  }
+  WorkerPool.prototype._onMessage = function (wk, e) {
+    var h = this.handlers[e.data.id];
+    if (!h) return;
+    delete this.handlers[e.data.id];
+    this._release(wk);
+    if (e.data.type === 'error') h.reject(new Error(e.data.message)); else h.resolve(e.data);
+  };
+  WorkerPool.prototype._onError = function (wk, e) {
+    this.broken = true;
+    for (var id in this.handlers) { if (this.handlers[id].worker === wk) { this.handlers[id].reject(new Error('worker-error: ' + (e && e.message))); delete this.handlers[id]; } }
+  };
+  WorkerPool.prototype._release = function (wk) {
+    var next = this.waiting.shift();
+    if (next) next(wk); else this.idle.push(wk);
+  };
+  WorkerPool.prototype._acquire = function () {
+    var self = this;
+    if (this.idle.length) return Promise.resolve(this.idle.shift());
+    return new Promise(function (res) { self.waiting.push(res); });
+  };
+  WorkerPool.prototype._send = function (wk, msg, transfer) {
+    var self = this, id = ++this.seq;
+    msg.id = id;
+    return new Promise(function (resolve, reject) {
+      self.handlers[id] = { resolve: resolve, reject: reject, worker: wk };
+      wk.postMessage(msg, transfer || []);
+    });
+  };
+  // 모든 일꾼에게 이번 사진의 분석 결과·설정을 한 번씩 보내요
+  WorkerPool.prototype.setup = function (an, p) {
+    var self = this, plainAn = {}, k;
+    for (k in an) plainAn[k] = an[k];
+    return Promise.all(this.workers.map(function (wk) {
+      var at = self.idle.indexOf(wk);
+      if (at >= 0) self.idle.splice(at, 1);
+      return self._send(wk, { type: 'setup', an: plainAn, p: p });
+    }));
+  };
+  WorkerPool.prototype.tile = function (job) {
+    var self = this;
+    return this._acquire().then(function (wk) { return self._send(wk, job, [job.buf]); });
+  };
+
+  // 한 번에 한 작업만 일꾼들을 쓰도록 줄 세우기
+  async function renderParallel(src, dstCanvas, w, h, an, p, opts) {
+    var pool = opts.pool, release, prev = pool._lock || Promise.resolve();
+    pool._lock = new Promise(function (r) { release = r; });
+    try { await prev; return await renderParallelLocked(src, dstCanvas, w, h, an, p, opts); }
+    finally { release(); }
+  }
+  async function renderParallelLocked(src, dstCanvas, w, h, an, p, opts) {
+    var pool = opts.pool, cs = opts.colorSpace || 'srgb';
+    var sw = src.naturalWidth || src.width, shh = src.naturalHeight || src.height;
+    dstCanvas.width = w; dstCanvas.height = h;
+    var dctx = ctx2d(dstCanvas, cs);
+    var pad = sharpenRadius(w).r + 2;
+    var tileH = Math.max(48, Math.min(384, Math.round(1200000 / w)));
+    var tiles = Math.ceil(h / tileH);
+    var tile = makeCanvas(w, tileH + pad * 2);
+    var tctx = ctx2d(tile, cs, true);
+    tctx.imageSmoothingEnabled = true; tctx.imageSmoothingQuality = 'high';
+    var sy = shh / h, amount = BASE.sharpen * (p.detail / 0.5);
+    await pool.setup(an, p);
+    var inflight = [], done = 0, cancelled = false, failure = null;
+    for (var t = 0; t < tiles; t++) {
+      if (opts.shouldCancel && opts.shouldCancel()) { cancelled = true; break; }
+      if (failure) break;
+      // 일꾼 수보다 조금 더 많이 미리 보내 두고, 하나 끝나면 다음 조각
+      while (inflight.length >= pool.size + 1) await Promise.race(inflight);
+      var y0 = t * tileH, rows = Math.min(tileH, h - y0);
+      var top = Math.max(0, y0 - pad), bottom = Math.min(h, y0 + rows + pad), th = bottom - top;
+      tctx.clearRect(0, 0, w, tile.height);
+      tctx.drawImage(src, 0, top * sy, sw, th * sy, 0, 0, w, th);
+      var buf = tctx.getImageData(0, 0, w, th, { colorSpace: cs }).data.buffer;
+      (function (y0, rows, top, th, buf) {
+        var job = pool.tile({ type: 'tile', buf: buf, w: w, th: th, top: top, fullW: w, fullH: h, amount: amount })
+          .then(function (res) {
+            var img = new ImageData(new Uint8ClampedArray(res.buf), w, th, { colorSpace: cs });
+            dctx.putImageData(img, 0, top, 0, y0 - top, w, rows);  // 가장자리 여백은 빼고 가운데 줄만
+            done++;
+            if (opts.onProgress) opts.onProgress(done, tiles);
+          }, function (err) { failure = err; });
+        var tracked = job.then(function () { inflight.splice(inflight.indexOf(tracked), 1); });
+        inflight.push(tracked);
+      })(y0, rows, top, th, buf);
+      await new Promise(function (res) { setTimeout(res, 0); });  // 화면이 멈추지 않게 잠깐 쉬기
+    }
+    await Promise.all(inflight);
+    tile.width = tile.height = 0;
+    if (failure) throw failure;
+    return !cancelled;
+  }
+
   /* 작은 사본 만들기 (분석용) */
   function sampleSmall(src, maxSide, colorSpace) {
     var sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
@@ -380,7 +492,7 @@
   var api = {
     BASE: BASE, PRESETS: PRESETS, PRESET_ORDER: PRESET_ORDER, SLIDERS: SLIDERS,
     paramsFromPreset: paramsFromPreset, analyze: analyze, toneTile: toneTile, sharpenTile: sharpenTile,
-    render: render, sampleSmall: sampleSmall
+    render: render, sampleSmall: sampleSmall, WorkerPool: WorkerPool
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.P18Engine = api;

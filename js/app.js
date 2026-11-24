@@ -8,7 +8,7 @@
   var ENG = window.P18Engine;
   var $ = function (id) { return document.getElementById(id); };
 
-  var APP_VERSION = '2026.11.21';
+  var APP_VERSION = '2026.11.24';
   var ANALYZE_SIDE = 900;     // 분석용 작은 사본 긴 변
   var PREVIEW_FAST = 620;     // 슬라이더 끄는 동안
   var PREVIEW_FULL = 1180;    // 손 뗐을 때
@@ -21,6 +21,20 @@
       return !!x && !!x.getContextAttributes && x.getContextAttributes().colorSpace === 'display-p3';
     } catch (e) { return false; }
   })();
+
+  // 원본 크기 보정을 나눠 맡을 일꾼들 (아이폰 14 Pro: 6코어 → 4개)
+  var pool = null;
+  function getPool() {
+    if (pool && !pool.broken) return pool;
+    if (pool && pool.broken) return null;
+    try {
+      if (typeof Worker === 'undefined') return null;
+      var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
+      pool = new ENG.WorkerPool('js/worker.js?v=2', n);
+      if (!pool.size) pool = null;
+    } catch (e) { console.warn('worker pool unavailable', e); pool = null; }
+    return pool;
+  }
 
   var state = {
     file: null, buffer: null, kind: null, img: null, objectUrl: null,
@@ -398,7 +412,7 @@
   function schedulePrepare() {
     clearTimeout(prepareTimer);
     if (!state.src) return;
-    prepareTimer = setTimeout(autoPrepare, 1200);
+    prepareTimer = setTimeout(autoPrepare, 350);
   }
   async function autoPrepare() {
     if (!state.src || state.busy || state.preparing || state.out) return;
@@ -474,7 +488,7 @@
       var canvas = document.createElement('canvas');
       try {
         var ok = await ENG.render(state.src, canvas, w, h, an, params, {
-          colorSpace: state.cs, yieldEvery: 1, shouldCancel: cancelled,
+          colorSpace: state.cs, yieldEvery: 1, shouldCancel: cancelled, pool: getPool(),
           onProgress: opts.silent ? null : setProgress
         });
         if (!ok) break;
@@ -632,7 +646,7 @@
     var v = $('version'); if (v) v.textContent = '버전 ' + APP_VERSION;
   }
   // 테스트용으로 살짝 열어 둬요
-  window.__studio = { state: state, buildOutput: buildOutput };
+  window.__studio = { state: state, buildOutput: buildOutput, pool: function () { return getPool(); } };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
