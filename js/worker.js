@@ -3,7 +3,7 @@
  * 화면(메인 스레드)이 사진 조각을 보내면, 보정 엔진으로 계산해서 돌려줘요.
  */
 /* global P18Engine */
-importScripts('engine.js?v=3', 'face.js?v=3');
+importScripts('engine.js?v=4', 'face.js?v=4');
 /* global P18Face */
 
 var an = null, p = null, classify = null;
@@ -13,7 +13,7 @@ self.onmessage = function (e) {
     (classify ? Promise.resolve() : fetch('facefinder.bin').then(function (r) { if (!r.ok) throw new Error('model ' + r.status); return r.arrayBuffer(); })
       .then(function (buf) { classify = P18Face.unpackCascade(new Int8Array(buf)); }))
       .then(function () {
-        var faces = P18Face.detect(classify, m.rgba, m.w, m.h, { minScore: 10 });
+        var faces = P18Face.detect(classify, m.rgba, m.w, m.h, { minScore: 5 });
         self.postMessage({ type: 'faces', id: m.id, faces: faces });
       })
       .catch(function (err) { self.postMessage({ type: 'error', id: m.id, message: String(err && err.message || err) }); });

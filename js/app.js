@@ -8,7 +8,7 @@
   var ENG = window.P18Engine;
   var $ = function (id) { return document.getElementById(id); };
 
-  var APP_VERSION = '2026.11.24';
+  var APP_VERSION = '2026.11.24b';
   var ANALYZE_SIDE = 900;     // 분석용 작은 사본 긴 변
   var PREVIEW_FAST = 620;     // 슬라이더 끄는 동안
   var PREVIEW_FULL = 1180;    // 손 뗐을 때
@@ -30,7 +30,7 @@
     try {
       if (typeof Worker === 'undefined') return null;
       var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
-      pool = new ENG.WorkerPool('js/worker.js?v=3', n);
+      pool = new ENG.WorkerPool('js/worker.js?v=4', n);
       if (!pool.size) pool = null;
     } catch (e) { console.warn('worker pool unavailable', e); pool = null; }
     return pool;
@@ -44,7 +44,7 @@
     try {
       if (typeof Worker !== 'undefined') {
         if (!faceWorker) {
-          faceWorker = new Worker('js/worker.js?v=3');
+          faceWorker = new Worker('js/worker.js?v=4');
           faceWorker.onmessage = function (e) {
             var w = faceWaiters[e.data.id]; if (!w) return;
             delete faceWaiters[e.data.id];
@@ -58,7 +58,7 @@
       } else {
         job = (mainClassify ? Promise.resolve() : fetch('js/facefinder.bin').then(function (r) { return r.arrayBuffer(); })
           .then(function (b) { mainClassify = window.P18Face.unpackCascade(new Int8Array(b)); }))
-          .then(function () { return window.P18Face.detect(mainClassify, small.data, small.w, small.h, { minScore: 10 }); });
+          .then(function () { return window.P18Face.detect(mainClassify, small.data, small.w, small.h, { minScore: 5 }); });
       }
     } catch (e) { console.warn('face detection unavailable', e); return Promise.resolve(null); }
     return Promise.race([job.catch(function () { return null; }), timeout]);
@@ -678,7 +678,7 @@
     wireUi();
     wireStageSlider();
     setSplit(0.5);
-    var v = $('version'); if (v) v.textContent = '버전 ' + APP_VERSION;
+    var v = $('version'); if (v) v.textContent = '버전 ' + APP_VERSION; var vh = $('versionHome'); if (vh) vh.textContent = '버전 ' + APP_VERSION;
   }
   // 테스트용으로 살짝 열어 둬요
   window.__studio = { state: state, buildOutput: buildOutput, pool: function () { return getPool(); } };

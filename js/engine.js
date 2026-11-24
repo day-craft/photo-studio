@@ -201,6 +201,22 @@
     }
     var scale = w / 1512;  // 처음 맞춘 기준(가로 1512px)과 같은 비율
     // 얼굴을 찾았으면 피부 보정은 얼굴 주변에만 (음식·바닥·장난감은 빼고)
+    // 얼굴 후보 한 번 더 확인: 점수 25 이상은 인정, 10~25는 피부색 25% 이상, 5~10은 35% 이상일 때만 얼굴로 인정
+    if (Array.isArray(faces)) {
+      faces = faces.filter(function (F) {
+        if (F.score >= 25) return true;
+        var need = F.score >= 10 ? 0.25 : 0.35;   // 점수가 낮을수록 피부색 확인을 더 엄격하게
+        var cx = F.x, cy = F.y + 0.08 * F.size, rx = 0.5 * F.size, ry = 0.62 * F.size, tot = 0, sk = 0;
+        for (var yy = Math.max(0, Math.floor(cy - ry)); yy < Math.min(h, cy + ry); yy++)
+          for (var xx = Math.max(0, Math.floor(cx - rx)); xx < Math.min(w, cx + rx); xx++) {
+            var ex = (xx - cx) / rx, ey = (yy - cy) / ry; if (ex * ex + ey * ey > 1) continue;
+            var at = yy * w + xx, A1 = As[at], B1 = Bs[at], L1 = Ls[at];
+            var hu = Math.atan2(B1, A1) * 180 / Math.PI, c1 = Math.sqrt(A1 * A1 + B1 * B1);
+            tot++; if (hu > 18 && hu < 80 && c1 > 6 && c1 < 45 && L1 > 25 && L1 < 95) sk++;
+          }
+        return tot > 0 && sk / tot >= need;
+      });
+    }
     var useFaces = Array.isArray(faces) && faces.length > 0;
     if (useFaces) {
       var fw = new Float32Array(n);
@@ -221,8 +237,11 @@
     var lowA = null, lowB = null;
     if (p.nr > 0.001) { lowA = fastBlur(As, w, h, 3 * scale + 0.6); lowB = fastBlur(Bs, w, h, 3 * scale + 0.6); }
 
-    var hAll = new Uint32Array(1000);
-    for (i = 0; i < n; i++) hAll[clamp((Ls[i] * 10) | 0, 0, 999)]++;
+    var hAll = new Uint32Array(1000), hMid = new Uint32Array(1000), nMid = 0;
+    for (i = 0; i < n; i++) { var li = clamp((Ls[i] * 10) | 0, 0, 999); hAll[li]++; if (Ls[i] < 88) { hMid[li]++; nMid++; } }
+    // 이미 밝은 장면(흰색 가까운 곳을 뺀 나머지가 밝음)은 중간 밝기 올리기를 줄여요
+    var midMed = nMid > n * 0.05 ? histQuantile(hMid, 0, 0.1, 0.5) : 50;
+    var midK = clamp((80 - midMed) / 14, 0.3, 1);
     var blackPt = clamp(histQuantile(hAll, 0, 0.1, 0.005) - 1, 0, 4) * 0.8;
 
     var hL = new Uint32Array(1000), hA = new Uint32Array(2560), hB = new Uint32Array(2560), sc = 0;
@@ -241,7 +260,7 @@
     return {
       wb: wb, gain: gain, gainAuto: gainAuto, mask: mask, lowL: lowL, lowA: lowA, lowB: lowB, blackPt: blackPt,
       mw: w, mh: h, cast: cast, wbK: wbK, skinFrac: skinFrac, skinFound: skinFound, autoPerson: autoPerson, faceOn: faceOn,
-      faceCount: Array.isArray(faces) ? faces.length : -1,
+      faceCount: Array.isArray(faces) ? faces.length : -1, midK: midK, midMed: midMed,
       dL: face ? clamp(BASE.skinL - sL, 0, BASE.skinLMax) : 0,
       dB: face ? clamp(BASE.skinB - sB, -BASE.skinBMax, BASE.skinBMax) : 0,
       dA: face ? clamp(BASE.skinA - sA, -BASE.skinAMax, 0) : 0
@@ -258,7 +277,7 @@
     var mw = an.mw, mh = an.mh, dL = an.dL, dA = an.dA, dB = an.dB;
     var bpScale = 100 / (100 - an.blackPt), blackPt = an.blackPt;
     var detail = p.detail / 0.5;
-    var clar = BASE.clarity * detail, cSkin = BASE.claritySkin, vib = p.vibrance, mid = BASE.midLift;
+    var clar = BASE.clarity * detail, cSkin = BASE.claritySkin, vib = p.vibrance, mid = BASE.midLift * (an.midK == null ? 1 : an.midK);
     var shadows = p.shadows, contrast = p.contrast, nr = p.nr;
     var lab = [0, 0, 0], rgb = [0, 0, 0], k0 = BASE.shoulder, kk = 1 - k0;
     var sxs = mw / fullW, sys = mh / fullH;
