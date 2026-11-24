@@ -150,7 +150,7 @@
   /**
    * 작은 사본(RGBA)으로 사진 상태를 분석해요. 파라미터(색 맞춤·밝기·따뜻함·얼굴)에 따라 결과가 달라져요.
    */
-  function analyze(px, w, h, p) {
+  function analyze(px, w, h, p, faces) {
     var n = w * h, i, q;
     var YB = 4096, histY = new Uint32Array(YB);
     var Y = new Float32Array(n), cand = new Uint8Array(n), candCount = 0, sumY = 0;
@@ -188,6 +188,8 @@
     var gain = clamp(gainAuto * Math.pow(2, p.exposureEV), 0.5, 3.2);
 
     var skinRaw = new Float32Array(n), Ls = new Float32Array(n), As = new Float32Array(n), Bs = new Float32Array(n);
+    // 얼굴을 확실히 찾은 사진은 얼굴 주변만 보니까, 어두운 피부도 피부로 봐요 (옷과 헷갈릴 걱정이 적어서)
+    var skinLo = (Array.isArray(faces) && faces.length > 0) ? 38 : 50;
     var lab = [0, 0, 0], k0 = BASE.shoulder;
     function sh(v) { return v > k0 ? k0 + (1 - k0) * (1 - Math.exp(-(v - k0) / (1 - k0))) : v; }
     for (i = 0, q = 0; i < n; i++, q += 4) {
@@ -195,9 +197,25 @@
       var L = lab[0], A = lab[1], B = lab[2];
       Ls[i] = L; As[i] = A; Bs[i] = B;
       var hue = Math.atan2(B, A) * 180 / Math.PI, ch = Math.sqrt(A * A + B * B);
-      if (hue > 22 && hue < 75 && ch > 8 && ch < 40 && L < 90) skinRaw[i] = clamp((L - 50) / 8, 0, 1);
+      if (hue > 22 && hue < 75 && ch > 6 && ch < 40 && L < 90) skinRaw[i] = clamp((L - skinLo) / 8, 0, 1);
     }
     var scale = w / 1512;  // 처음 맞춘 기준(가로 1512px)과 같은 비율
+    // 얼굴을 찾았으면 피부 보정은 얼굴 주변에만 (음식·바닥·장난감은 빼고)
+    var useFaces = Array.isArray(faces) && faces.length > 0;
+    if (useFaces) {
+      var fw = new Float32Array(n);
+      for (var fi = 0; fi < faces.length; fi++) {
+        var F = faces[fi], cx = F.x, cy = F.y + 0.08 * F.size, rx = 0.62 * F.size, ry = 0.78 * F.size;
+        var x0 = Math.max(0, Math.floor(cx - rx * 1.4)), x1 = Math.min(w - 1, Math.ceil(cx + rx * 1.4));
+        var y0 = Math.max(0, Math.floor(cy - ry * 1.4)), y1 = Math.min(h - 1, Math.ceil(cy + ry * 1.4));
+        for (var yy = y0; yy <= y1; yy++) for (var xx = x0; xx <= x1; xx++) {
+          var ex = (xx - cx) / rx, ey = (yy - cy) / ry, dd = Math.sqrt(ex * ex + ey * ey);
+          var wv = dd <= 1 ? 1 : dd >= 1.4 ? 0 : 1 - (dd - 1) / 0.4;
+          var at = yy * w + xx; if (wv > fw[at]) fw[at] = wv;
+        }
+      }
+      for (i = 0; i < n; i++) skinRaw[i] *= fw[i];
+    }
     var mask = fastBlur(skinRaw, w, h, 6 * scale);
     var lowL = fastBlur(Ls, w, h, 20 * scale);
     var lowA = null, lowB = null;
@@ -215,13 +233,15 @@
     var skinFrac = sc / n, skinFound = sc > n * 0.00015;
     var sL = 70, sA = 10, sB = 16;
     if (skinFound) { sL = histQuantile(hL, 0, 0.1, 0.5); sA = histQuantile(hA, -128, 0.1, 0.5); sB = histQuantile(hB, -128, 0.1, 0.5); }
-    var autoPerson = skinFrac > 0.004 && skinFrac < 0.35;
+    // 얼굴 찾기 결과가 있으면 그걸로, 없으면(찾기 실패) 예전처럼 피부색 넓이로 판단
+    var autoPerson = Array.isArray(faces) ? faces.length > 0 : (skinFrac > 0.004 && skinFrac < 0.35);
     var faceOn = p.face === 'on' || (p.face === 'auto' && autoPerson);
     var face = faceOn && skinFound;
     if (!face) mask.fill(0);
     return {
       wb: wb, gain: gain, gainAuto: gainAuto, mask: mask, lowL: lowL, lowA: lowA, lowB: lowB, blackPt: blackPt,
       mw: w, mh: h, cast: cast, wbK: wbK, skinFrac: skinFrac, skinFound: skinFound, autoPerson: autoPerson, faceOn: faceOn,
+      faceCount: Array.isArray(faces) ? faces.length : -1,
       dL: face ? clamp(BASE.skinL - sL, 0, BASE.skinLMax) : 0,
       dB: face ? clamp(BASE.skinB - sB, -BASE.skinBMax, BASE.skinBMax) : 0,
       dA: face ? clamp(BASE.skinA - sA, -BASE.skinAMax, 0) : 0
@@ -285,6 +305,19 @@
         var vb = 1 + vib * (1 - clamp(ch / 50, 0, 1)) * (1 - 0.6 * m);
         A *= vb; B *= vb;
         labToLin(clamp(L, 0, 100), clamp(A, -128, 127), clamp(B, -128, 127), rgb);
+        // 진한 색이 넘쳐서 하얗게/평평하게 날아가지 않게: 밝기는 지키고 넘치는 만큼만 색을 줄여요
+        //   진한 색일수록 일찍(최대값의 80%부터) 부드럽게 눌러요. 흰색·회색은 건드리지 않아요.
+        var mxc = rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]);
+        var mnc = rgb[0] < rgb[1] ? (rgb[0] < rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] < rgb[2] ? rgb[1] : rgb[2]);
+        if (mxc > 0.8) {
+          var satc = mxc > 0 ? clamp((mxc - mnc) / mxc, 0, 1) : 0;
+          var knee = 0.96 - 0.16 * satc, span = 0.985 - knee;
+          if (mxc > knee && span > 0) {
+            var tgt = knee + span * (1 - Math.exp(-(mxc - knee) / span));
+            var Yl = 0.212671 * rgb[0] + 0.715160 * rgb[1] + 0.072169 * rgb[2];
+            if (Yl < tgt) { var kg = (tgt - Yl) / (mxc - Yl); rgb[0] = Yl + (rgb[0] - Yl) * kg; rgb[1] = Yl + (rgb[1] - Yl) * kg; rgb[2] = Yl + (rgb[2] - Yl) * kg; }
+          }
+        }
         px[q] = TO_GAM[((rgb[0] < 0 ? 0 : rgb[0] > 1 ? 1 : rgb[0]) * GAM_N + 0.5) | 0];
         px[q + 1] = TO_GAM[((rgb[1] < 0 ? 0 : rgb[1] > 1 ? 1 : rgb[1]) * GAM_N + 0.5) | 0];
         px[q + 2] = TO_GAM[((rgb[2] < 0 ? 0 : rgb[2] > 1 ? 1 : rgb[2]) * GAM_N + 0.5) | 0];

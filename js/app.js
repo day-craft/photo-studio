@@ -30,17 +30,45 @@
     try {
       if (typeof Worker === 'undefined') return null;
       var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
-      pool = new ENG.WorkerPool('js/worker.js?v=2', n);
+      pool = new ENG.WorkerPool('js/worker.js?v=3', n);
       if (!pool.size) pool = null;
     } catch (e) { console.warn('worker pool unavailable', e); pool = null; }
     return pool;
+  }
+
+  /* ───────────────────────────────────────────── 얼굴 찾기 (별도 일꾼, 사진마다 한 번) */
+  var faceWorker = null, faceSeq = 0, faceWaiters = {}, mainClassify = null;
+  function findFaces(small) {
+    var timeout = new Promise(function (res) { setTimeout(function () { res(null); }, 8000); });
+    var job;
+    try {
+      if (typeof Worker !== 'undefined') {
+        if (!faceWorker) {
+          faceWorker = new Worker('js/worker.js?v=3');
+          faceWorker.onmessage = function (e) {
+            var w = faceWaiters[e.data.id]; if (!w) return;
+            delete faceWaiters[e.data.id];
+            w(e.data.type === 'faces' ? e.data.faces : null);
+          };
+          faceWorker.onerror = function () { faceWorker = null; for (var k in faceWaiters) { faceWaiters[k](null); delete faceWaiters[k]; } };
+        }
+        var id = ++faceSeq;
+        job = new Promise(function (res) { faceWaiters[id] = res; });
+        faceWorker.postMessage({ type: 'faces', id: id, rgba: small.data, w: small.w, h: small.h });
+      } else {
+        job = (mainClassify ? Promise.resolve() : fetch('js/facefinder.bin').then(function (r) { return r.arrayBuffer(); })
+          .then(function (b) { mainClassify = window.P18Face.unpackCascade(new Int8Array(b)); }))
+          .then(function () { return window.P18Face.detect(mainClassify, small.data, small.w, small.h, { minScore: 10 }); });
+      }
+    } catch (e) { console.warn('face detection unavailable', e); return Promise.resolve(null); }
+    return Promise.race([job.catch(function () { return null; }), timeout]);
   }
 
   var state = {
     file: null, buffer: null, kind: null, img: null, objectUrl: null,
     src: null, srcW: 0, srcH: 0,
     info: null, segs: null, heicTiff: null,
-    cs: 'srgb', small: null, an: null,
+    cs: 'srgb', small: null, an: null, faces: null,
     preset: 'auto', params: null,
     out: null, busy: false, preparing: false, split: 0.5, photoId: 0
   };
@@ -263,6 +291,7 @@
       state.img = dec.img; state.src = dec.img;      // 브라우저가 회전(Orientation)을 적용해서 그려요
       state.srcW = dec.img.naturalWidth; state.srcH = dec.img.naturalHeight;
       state.small = ENG.sampleSmall(state.src, ANALYZE_SIDE, state.cs);
+      state.faces = null;
       state.split = 0.5;
 
       $('emptyState').hidden = true;
@@ -272,6 +301,11 @@
       layoutStage();
       renderMetaPanel();
       syncChips();
+      $('autoNote').textContent = '얼굴 찾는 중…';
+      var myId = state.photoId;
+      var faces = await findFaces(state.small);
+      if (myId !== state.photoId) return;
+      state.faces = faces;            // null이면 얼굴 찾기를 못 쓴 것 → 예전 방식(피부색)으로 판단
       paramsChanged(false);
     } catch (e) {
       console.error(e);
@@ -283,7 +317,7 @@
 
   /* ───────────────────────────────────────────── 분석·미리보기 */
   function analyzeNow() {
-    state.an = ENG.analyze(state.small.data, state.small.w, state.small.h, state.params);
+    state.an = ENG.analyze(state.small.data, state.small.w, state.small.h, state.params, state.faces);
     renderAutoNote();
   }
   function renderAutoNote() {
@@ -293,8 +327,9 @@
     else bits.push('흰색 기준으로 색 맞춤');
     var stop = Math.log2(an.gainAuto);
     if (stop >= 0.05) bits.push('자동 밝기 +' + stop.toFixed(1) + '스톱');
+    if (an.faceCount > 0) bits.push('얼굴 ' + an.faceCount + '개 찾음');
     if (an.faceOn) {
-      if (!an.skinFound) bits.push('얼굴을 찾지 못했어요');
+      if (!an.skinFound) bits.push('얼굴 피부를 찾지 못했어요');
       else {
         var f = [];
         if (an.dL >= 0.5) f.push('밝게');
@@ -303,7 +338,7 @@
         if (an.dB <= -0.5) f.push('누런기 뺌');
         bits.push('얼굴 보정' + (f.length ? '(' + f.join('·') + ')' : ''));
       }
-    } else bits.push(state.params.face === 'auto' ? '인물이 아닌 사진으로 판단 · 얼굴 보정 끔' : '얼굴 보정 끔');
+    } else bits.push(state.params.face === 'auto' ? '얼굴이 없는 사진으로 판단 · 얼굴 보정 끔' : '얼굴 보정 끔');
     $('autoNote').textContent = bits.join(' · ');
     var faceAuto = $('faceAutoHint');
     if (faceAuto) faceAuto.textContent = state.params.face === 'auto' ? (an.autoPerson ? '→ 인물' : '→ 일반') : '';
@@ -480,7 +515,7 @@
     var cancelled = function () { return id !== state.photoId || (opts.shouldCancel && opts.shouldCancel()); };
     if (!opts.silent) { showOverlay('보정하는 중…', '원본 해상도로 처리하고 있어요'); await nextFrame(); }
     var area = state.srcW * state.srcH, scale = area > MAX_EXPORT_AREA ? Math.sqrt(MAX_EXPORT_AREA / area) : 1;
-    var an = ENG.analyze(state.small.data, state.small.w, state.small.h, state.params);
+    var an = ENG.analyze(state.small.data, state.small.w, state.small.h, state.params, state.faces);
     var params = state.params, result = null;
     for (var attempt = 0; attempt < 4 && !result; attempt++) {
       if (cancelled()) break;
