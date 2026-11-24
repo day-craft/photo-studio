@@ -201,10 +201,12 @@
     }
     var scale = w / 1512;  // 처음 맞춘 기준(가로 1512px)과 같은 비율
     // 얼굴을 찾았으면 피부 보정은 얼굴 주변에만 (음식·바닥·장난감은 빼고)
-    // 얼굴 후보 한 번 더 확인: 점수 25 이상은 인정, 10~25는 피부색 25% 이상, 5~10은 35% 이상일 때만 얼굴로 인정
+    // 얼굴 후보 한 번 더 확인: 점수 25 이상은 인정, 기울어진 후보는 15 미만 버림, 10~25는 피부색 25% 이상, 5~10은 35% 이상일 때만 얼굴로 인정
     if (Array.isArray(faces)) {
       faces = faces.filter(function (F) {
         if (F.score >= 25) return true;
+        // 기울어진 자리(±25°·±50°)에서만 찾은 약한 후보는 무늬를 얼굴로 착각한 경우가 대부분이라 15점 이상만
+        if (F.angle && F.score < 15) return false;
         var need = F.score >= 10 ? 0.25 : 0.35;   // 점수가 낮을수록 피부색 확인을 더 엄격하게
         var cx = F.x, cy = F.y + 0.08 * F.size, rx = 0.5 * F.size, ry = 0.62 * F.size, tot = 0, sk = 0;
         for (var yy = Math.max(0, Math.floor(cy - ry)); yy < Math.min(h, cy + ry); yy++)

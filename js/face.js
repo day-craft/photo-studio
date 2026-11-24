@@ -97,9 +97,14 @@
     var minScore = opts.minScore || 10;
     var sides = opts.sides || [420, 480];          // 두 가지 크기로 찾고 더 확실한 점수를 써요
     var angles = opts.angles || [0, -25, 25, -50, 50];
+    // 똑바른 얼굴만 한 크기 더 크게 찾아요 (작게 찍힌 아기 얼굴용)
+    var uprightSides = opts.uprightSides || [560];
+    var jobs = [];
+    sides.forEach(function (sd) { jobs.push({ side: sd, angles: angles }); });
+    uprightSides.forEach(function (sd) { jobs.push({ side: sd, angles: [0] }); });
     var faces = [];
-    for (var si = 0; si < sides.length; si++) {
-      var s = Math.min(1, sides[si] / Math.max(w, h)), gw = Math.max(1, Math.round(w * s)), gh = Math.max(1, Math.round(h * s));
+    for (var si = 0; si < jobs.length; si++) {
+      var s = Math.min(1, jobs[si].side / Math.max(w, h)), gw = Math.max(1, Math.round(w * s)), gh = Math.max(1, Math.round(h * s));
       var gray = new Uint8Array(gw * gh);
       for (var y = 0; y < gh; y++) {
         var sy = Math.min(h - 1, Math.floor(y / s));
@@ -110,12 +115,13 @@
       }
       var short = Math.min(gw, gh);
       var params = { shiftfactor: 0.1, minsize: Math.max(16, Math.round(short * 0.06)), maxsize: Math.round(short * 0.95), scalefactor: 1.12 };
-      for (var a = 0; a < angles.length; a++) {
-        var rot = rotate(gray, gw, gh, angles[a]);
+      var angs = jobs[si].angles;
+      for (var a = 0; a < angs.length; a++) {
+        var rot = rotate(gray, gw, gh, angs[a]);
         var dets = clusterDetections(runCascade(rot.px, rot.h, rot.w, classify, params), 0.2);
         for (var d = 0; d < dets.length; d++) {
           var p = rot.back(dets[d][1], dets[d][0]);   // 돌린 좌표 → 원래 좌표
-          faces.push({ x: p[0] / s, y: p[1] / s, size: dets[d][2] / s, score: dets[d][3], angle: angles[a] });
+          faces.push({ x: p[0] / s, y: p[1] / s, size: dets[d][2] / s, score: dets[d][3], angle: angs[a] });
         }
       }
     }
