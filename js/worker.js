@@ -3,7 +3,7 @@
  * 화면(메인 스레드)이 사진 조각을 보내면, 보정 엔진으로 계산해서 돌려줘요.
  */
 /* global P18Engine */
-importScripts('engine.js?v=5', 'face.js?v=5');
+importScripts('engine.js?v=6', 'face.js?v=6');
 /* global P18Face */
 
 var an = null, p = null, classify = null;

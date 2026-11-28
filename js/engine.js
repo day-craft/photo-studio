@@ -23,6 +23,7 @@
     clarity: 0.22,              // 윤곽 대비
     claritySkin: 0.5,           // 얼굴 위 윤곽 대비 비율
     sharpen: 0.55,              // 잔디테일 선명하게
+    hiKeep: 1,                  // 밝은 곳 결 되살리기 (0=끔, 1=원래 결만큼)
     sharpenSkin: 0.35,          // 얼굴 위 선명하게 비율
     skinL: 68, skinLMax: 2.5,   // 얼굴 밝기 목표 / 최대 추가 밝기
     skinB: 14.5, skinBMax: 2,   // 살구빛(노란기) 목표 / 최대 조정
@@ -318,6 +319,14 @@
         if (shadows > 0.001) L += shadows * 70 * Ln * Math.pow(1 - Ln, 2.5); // 암부 복원
         if (contrast !== 0) L += contrast * 100 * (Ln * Ln * (3 - 2 * Ln) - Ln); // 대비 S곡선
         L += clar * (1 - m * (1 - cSkin)) * (L0 - lo) * bell;            // 윤곽 대비
+        // 밝은 곳 결 지키기: 중간톤 올리기 곡선이 맨 위를 눌러 평평해지는 만큼 결(주변과의 차이)을 되살려요
+        var slope = 1 + mid * 6.75 * (2 * Ln - 3 * Ln * Ln);
+        if (slope < 1) {
+          var dd = L0 - lo; dd = dd > 15 ? 15 : dd < -15 ? -15 : dd;
+          var add = BASE.hiKeep * (1 / Math.max(slope, 0.6) - 1) * dd * (1 - m * (1 - cSkin));   // 얼굴 위는 절반만
+          if (add > 0) add *= clamp((99 - L) / 6, 0, 1);   // 밝은 쪽 결은 남은 여유만큼만 (하얗게 꽉 차지 않게)
+          L += add;
+        }
         L += m * dL * bell;                                               // 얼굴 밝게
         L = (L - blackPt) * bpScale;                                      // 검정은 검정답게
 
@@ -327,14 +336,16 @@
         A *= vb; B *= vb;
         labToLin(clamp(L, 0, 100), clamp(A, -128, 127), clamp(B, -128, 127), rgb);
         // 진한 색이 넘쳐서 하얗게/평평하게 날아가지 않게: 밝기는 지키고 넘치는 만큼만 색을 줄여요
-        //   진한 색일수록 일찍(최대값의 80%부터) 부드럽게 눌러요. 흰색·회색은 건드리지 않아요.
+        //   진한 색일수록 일찍(최대값의 80%부터) 부드럽게 눌러요. 흰색·회색·연한 파스텔색은 건드리지 않아요.
         var mxc = rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]);
         var mnc = rgb[0] < rgb[1] ? (rgb[0] < rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] < rgb[2] ? rgb[1] : rgb[2]);
         if (mxc > 0.8) {
           var satc = mxc > 0 ? clamp((mxc - mnc) / mxc, 0, 1) : 0;
           var knee = 0.96 - 0.16 * satc, span = 0.985 - knee;
-          if (mxc > knee && span > 0) {
+          var gW = smoothstep(0.3, 0.5, satc);   // 연한 파스텔색(턱받이·이불)은 색을 빼지 않아요
+          if (gW > 0 && mxc > knee && span > 0) {
             var tgt = knee + span * (1 - Math.exp(-(mxc - knee) / span));
+            tgt = mxc + (tgt - mxc) * gW;
             var Yl = 0.212671 * rgb[0] + 0.715160 * rgb[1] + 0.072169 * rgb[2];
             if (Yl < tgt) { var kg = (tgt - Yl) / (mxc - Yl); rgb[0] = Yl + (rgb[0] - Yl) * kg; rgb[1] = Yl + (rgb[1] - Yl) * kg; rgb[2] = Yl + (rgb[2] - Yl) * kg; }
           }
