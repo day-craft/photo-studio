@@ -27,7 +27,8 @@
     sharpenSkin: 0.35,          // 얼굴 위 선명하게 비율
     skinL: 68, skinLMax: 2.5,   // 얼굴 밝기 목표 / 최대 추가 밝기
     skinB: 14.5, skinBMax: 2,   // 살구빛(노란기) 목표 / 최대 조정
-    skinA: 11, skinAMax: 1.2    // 붉은기가 이보다 높을 때만 최대 1.2 줄이기
+    skinA: 11, skinAMax: 1.2,   // 붉은기가 이보다 높을 때만 최대 1.2 줄이기
+    skinTint: 0.15, skinTintB: 0.8, skinTintA: 0.4   // 얼굴 밝아진 비율만큼 살구빛(B)·붉은기(A) 따라 올리기
   };
 
   var PRESETS = {
@@ -334,6 +335,11 @@
         var B = B0 + m * dB - 0.5 * m * dA;
         var vb = 1 + vib * (1 - clamp(ch / 50, 0, 1)) * (1 - 0.6 * m);
         A *= vb; B *= vb;
+        // 얼굴이 밝아진 만큼 살구빛도 따라오게 (밝기만 오르면 창백·푸르스름해 보여요). 붉은기는 절반만
+        if (m > 0.01 && L0 > 20 && L > L0) {
+          var lift = m * Math.min((L - L0) / L0, BASE.skinTint);
+          B *= 1 + BASE.skinTintB * lift; A *= 1 + BASE.skinTintA * lift;
+        }
         labToLin(clamp(L, 0, 100), clamp(A, -128, 127), clamp(B, -128, 127), rgb);
         // 진한 색이 넘쳐서 하얗게/평평하게 날아가지 않게: 밝기는 지키고 넘치는 만큼만 색을 줄여요
         //   진한 색일수록 일찍(최대값의 80%부터) 부드럽게 눌러요. 흰색·회색·연한 파스텔색은 건드리지 않아요.

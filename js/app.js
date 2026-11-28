@@ -8,7 +8,7 @@
   var ENG = window.P18Engine;
   var $ = function (id) { return document.getElementById(id); };
 
-  var APP_VERSION = '2026.11.28';
+  var APP_VERSION = '2026.11.28b';
   var ANALYZE_SIDE = 900;     // 분석용 작은 사본 긴 변
   var PREVIEW_FAST = 620;     // 슬라이더 끄는 동안
   var PREVIEW_FULL = 1180;    // 손 뗐을 때
@@ -30,7 +30,7 @@
     try {
       if (typeof Worker === 'undefined') return null;
       var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
-      pool = new ENG.WorkerPool('js/worker.js?v=6', n);
+      pool = new ENG.WorkerPool('js/worker.js?v=7', n);
       if (!pool.size) pool = null;
     } catch (e) { console.warn('worker pool unavailable', e); pool = null; }
     return pool;
@@ -44,7 +44,7 @@
     try {
       if (typeof Worker !== 'undefined') {
         if (!faceWorker) {
-          faceWorker = new Worker('js/worker.js?v=6');
+          faceWorker = new Worker('js/worker.js?v=7');
           faceWorker.onmessage = function (e) {
             var w = faceWaiters[e.data.id]; if (!w) return;
             delete faceWaiters[e.data.id];
